@@ -7,7 +7,7 @@ ext {
     extClass = '.Picacomic'
     extVersionCode = 1
     libVersion = '1.2'
-    containsNsfw = true
+    isNsfw = true
 }
 
 dependencies {
