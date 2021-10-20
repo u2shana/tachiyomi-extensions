@@ -1,0 +1,17 @@
+apply plugin: 'com.android.application'
+apply plugin: 'kotlin-android'
+
+ext {
+    extName = 'Picacomic'
+    pkgNameSuffix = 'zh.picacomic'
+    extClass = '.Picacomic'
+    extVersionCode = 1
+    libVersion = '1.2'
+    containsNsfw = true
+}
+
+dependencies {
+    implementation 'com.auth0.android:jwtdecode:2.0.0'
+}
+
+apply from: "$rootDir/common.gradle"
