@@ -3,6 +3,7 @@ package eu.kanade.tachiyomi.extension.zh.picacomic
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
+// copy from https://github.com/czp3009/picacomic-api
 private const val algorithm = "HmacSHA256"
 
 private typealias MacResult = ByteArray
