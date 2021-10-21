@@ -17,15 +17,16 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.decodeFromJsonElement
 import okhttp3.Headers
 import okhttp3.Headers.Companion.toHeaders
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
-import org.json.JSONArray
-import org.json.JSONObject
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.net.URLEncoder
@@ -43,6 +44,9 @@ class Picacomic : HttpSource(), ConfigurableSource {
 
     private val preferences: SharedPreferences =
         Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
+
+    private val blocklist = preferences.getString("BLOCK_GENRES", "")!!
+        .split(',').map { it.trim() }
 
     private val basicHeaders = mapOf(
         "api-key" to "C69BAF41DA5ABD1FFEDC6D2FEA56B",
@@ -95,29 +99,22 @@ class Picacomic : HttpSource(), ConfigurableSource {
         }.toHeaders()
     }
 
+    private val json = Json { ignoreUnknownKeys = true }
+
     private fun getToken(username: String, password: String): String {
         val url = "$baseUrl/auth/sign-in"
-        val body = JSONObject(
-            mapOf(
-                "email" to username,
-                "password" to password,
-            )
-        ).toString().toRequestBody("application/json; charset=UTF-8".toMediaType())
+        val body = PicaLoginPayload(username, password)
+            .let { Json.encodeToString(it) }
+            .toRequestBody("application/json; charset=UTF-8".toMediaType())
 
         val response = client.newCall(
             POST(url, picaHeaders(url, "POST"), body)
         ).execute()
-        if (response.isSuccessful) {
-            return JSONObject(response.body!!.string())
-                .getJSONObject("data")
-                .getString("token")
-        } else {
-            throw Exception("登录失败")
-        }
-    }
 
-    private val blocklist = preferences.getString("BLOCK_GENRES", "")!!
-        .split(',').map { it.trim() }
+        if (!response.isSuccessful)
+            throw Exception("登录失败")
+        return json.decodeFromString<PicaResponse>(response.body!!.string()).data.token!!
+    }
 
     override fun popularMangaRequest(page: Int): Request {
         val url = "$baseUrl/comics?page=$page&s=dd"
@@ -126,25 +123,23 @@ class Picacomic : HttpSource(), ConfigurableSource {
 
     // for /comics/random, /comics/leaderboard
     private fun singlePageParse(response: Response): MangasPage {
-        val body = response.body!!.string()
-        val comics = JSONObject(body)
-            .getJSONObject("data")
-            .getJSONArray("comics")
-            .filterJSONObject { !hitBlocklist(it) }
+        val comics = json.decodeFromString<PicaResponse>(response.body!!.string())
+            .data.comics!!.let { json.decodeFromJsonElement<List<PicaSearchComic>>(it) }
 
-        val mangas = ArrayList<SManga>()
-        for (i in 0 until comics.length()) {
-            val comic = comics.getJSONObject(i)
-            val manga = SManga.create().apply {
-                title = comic.getString("title")
-                thumbnail_url = comic.getJSONObject("thumb").let {
-                    it.getString("fileServer") + "/static/" +
-                        it.getString("path")
+        val mangas = comics
+            .filter { !hitBlocklist(it) }
+            .map { comic ->
+                SManga.create().apply {
+                    title = comic.title
+                    author = comic.author
+                    thumbnail_url = comic.thumb.let {
+                        it.fileServer + "/static/" + it.path
+                    }
+                    url = "$baseUrl/comics/${comic._id}"
+                    status = if (comic.finished) SManga.COMPLETED else SManga.ONGOING
                 }
-                url = "$baseUrl/comics/${comic.getString("_id")}"
             }
-            mangas.add(manga)
-        }
+
         return MangasPage(mangas, response.request.url.toString().contains("/comics/random"))
     }
 
@@ -180,95 +175,59 @@ class Picacomic : HttpSource(), ConfigurableSource {
 
         // return comics from some search
         // filters may be empty
-        val opts = mapOf(
-            "keyword" to query,
-            "categories" to JSONArray(), // TODO
-            "sort" to (sort ?: "dd"),
-        )
-
         val url = "$baseUrl/comics/advanced-search?page=$page"
 
-        val jsonType = "application/json; charset=UTF-8".toMediaTypeOrNull()
-        val body = JSONObject(opts as Map<*, *>).toString().toRequestBody(jsonType)
+        val body = PicaSearchPayload(query, emptyList(), sort ?: "dd")
+            .let { Json.encodeToString(it) }
+            .toRequestBody("application/json; charset=UTF-8".toMediaType())
 
         return POST(url, picaHeaders(url, "POST"), body)
     }
 
-    private fun hitBlocklist(comic: JSONObject): Boolean {
-        val genres = ArrayList<String>()
-        if (comic.has("categories"))
-            comic.getJSONArray("categories")
-                .let {
-                    (0 until it.length()).map { i -> it.optString(i).trim() }
-                }
-                .let { genres.addAll(it) }
-        if (comic.has("tags"))
-            comic.getJSONArray("tags")
-                .let {
-                    (0 until it.length()).map { i -> it.optString(i).trim() }
-                }
-                .let { genres.addAll(it) }
-
-        return genres.any { it in blocklist }
+    private fun hitBlocklist(comic: PicaSearchComic): Boolean {
+        return (comic.tags ?: ArrayList<String>() + comic.categories)
+            .map(String::trim)
+            .any { it in blocklist }
     }
 
     override fun searchMangaParse(response: Response): MangasPage {
-        val body = response.body!!.string()
-        val hasNextPage: Boolean
-        val comics = JSONObject(body)
-            .getJSONObject("data")
-            .getJSONObject("comics")
-            .also {
-                hasNextPage = it.getInt("page") < it.getInt("pages")
-            }
-            .getJSONArray("docs")
-            .filterJSONObject { !hitBlocklist(it) }
+        val comics = json.decodeFromString<PicaResponse>(
+            response.body!!.string()
+        ).data.comics!!.let { json.decodeFromJsonElement<PicaSearchComics>(it) }
 
-        val mangas = ArrayList<SManga>()
-        for (i in 0 until comics.length()) {
-            val comic = comics.getJSONObject(i)
-            SManga.create().apply {
-                title = comic.getString("title")
-                thumbnail_url = comic.getJSONObject("thumb").let {
-                    it.getString("fileServer") + "/static/" +
-                        it.getString("path")
+        val mangas = comics.docs
+            .filter { !hitBlocklist(it) }
+            .map { comic ->
+                SManga.create().apply {
+                    title = comic.title
+                    author = comic.author
+                    thumbnail_url = comic.thumb.let { "${it.fileServer}/static/${it.path}" }
+                    url = "$baseUrl/comics/${comic._id}"
+                    status = if (comic.finished) SManga.COMPLETED else SManga.ONGOING
                 }
-                url = "$baseUrl/comics/${comic.getString("_id")}"
-            }.let(mangas::add)
-        }
-        return MangasPage(mangas, hasNextPage)
+            }
+
+        return MangasPage(mangas, comics.page < comics.pages)
     }
 
     override fun mangaDetailsRequest(manga: SManga): Request =
         GET(manga.url, picaHeaders(manga.url))
 
     override fun mangaDetailsParse(response: Response): SManga {
-        val responseBody = response.body!!.string()
-        val obj = JSONObject(responseBody)
-        val comic = obj.getJSONObject("data")
-            .getJSONObject("comic")
-
-        val categories = comic.getJSONArray("categories").let {
-            (0 until it.length()).map { i -> it.optString(i).trim() }
-        }
-        val tags = comic.getJSONArray("tags").let {
-            (0 until it.length()).map { i -> it.optString(i).trim() }
-        }
+        val comic = json.decodeFromString<PicaResponse>(
+            response.body!!.string()
+        ).data.comic!!
 
         return SManga.create().apply {
-            title = comic.getString("title")
-
-            if (comic.has("author"))
-                author = comic.getString("author")
-            if (comic.has("description"))
-                description = comic.getString("description")
-            if (comic.has("chineseTeam"))
-                artist = comic.getString("chineseTeam")
-
-            genre = (tags + categories).distinct().joinToString(", ")
-            status = if (comic.getBoolean("finished"))
-                SManga.COMPLETED
-            else SManga.ONGOING
+            title = comic.title
+            author = comic.author
+            description = comic.description
+            artist = comic.artist
+            genre = (comic.tags ?: ArrayList<String>() + comic.categories)
+                .map(String::trim)
+                .distinct()
+                .joinToString(", ")
+            status = if (comic.finished) SManga.COMPLETED else SManga.ONGOING
         }
     }
 
@@ -279,37 +238,29 @@ class Picacomic : HttpSource(), ConfigurableSource {
 
     override fun chapterListParse(response: Response): List<SChapter> {
         val comicId = response.request.url.pathSegments[1]
-        var hasNextPage: Boolean
-        var currentPage: Int
-        val chapters = JSONObject(response.body!!.string())
-            .getJSONObject("data")
-            .getJSONObject("eps")
-            .also {
-                currentPage = it.getInt("page")
-                hasNextPage = it.getInt("page") < it.getInt("pages")
-            }
-            .getJSONArray("docs")
+
+        val eps = json.decodeFromString<PicaResponse>(
+            response.body!!.string()
+        ).data.eps!!
+
         val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.getDefault())
 
-        val ret = ArrayList<SChapter>()
-        for (i in 0 until chapters.length()) {
-            val chapter = chapters.getJSONObject(i)
-            val chapterOrder = chapter.getString("order")
+        val ret = eps.docs.map {
             SChapter.create().apply {
-                name = chapter.getString("title")
-                url = "$baseUrl/comics/$comicId/order/$chapterOrder"
-                date_upload = sdf.parse(chapter.getString("updated_at"))!!.time
-            }.let(ret::add)
-        }
+                name = it.title
+                url = "$baseUrl/comics/$comicId/order/${it.order}"
+                date_upload = sdf.parse(it.updated_at)!!.time
+            }
+        }.toMutableList()
 
-        if (hasNextPage) {
+        if (eps.page < eps.pages) {
             val nextUrl = response.request.url.newBuilder()
                 .setQueryParameter(
-                    "page", (currentPage + 1).toString()
+                    "page", (eps.page + 1).toString()
                 ).build().toString()
 
             val nextResponse = client.newCall(GET(nextUrl, picaHeaders(nextUrl))).execute()
-            ret.addAll(chapterListParse(nextResponse))
+            ret += chapterListParse(nextResponse)
         }
 
         return ret
@@ -321,31 +272,22 @@ class Picacomic : HttpSource(), ConfigurableSource {
     )
 
     override fun pageListParse(response: Response): List<Page> {
-        val ret = ArrayList<Page>()
-        val responseBody = response.body!!.string()
-        val obj = JSONObject(responseBody)
-        val pages = obj.getJSONObject("data")
-            .getJSONObject("pages")
+        val pages = json.decodeFromString<PicaResponse>(
+            response.body!!.string()
+        ).data.pages!!
 
-        val pageList = pages.getJSONArray("docs")
+        val ret = pages.docs.mapIndexed { index, picaPage ->
+            val url = picaPage.media.let { "${it.fileServer}/static/${it.path}" }
+            Page(index, "", url)
+        }.toMutableList()
 
-        for (i in 0 until pageList.length()) {
-            val item = pageList.getJSONObject(i)
-            val url = item.getJSONObject("media").let {
-                it.getString("fileServer") + "/static/" +
-                    it.getString("path")
-            }
-            ret.add(Page(i, "", url))
-        }
-
-        if (pages.getInt("page") < pages.getInt("pages")) {
+        if (pages.page < pages.pages) {
             val nextUrl = response.request.url.newBuilder()
-                .setQueryParameter(
-                    "page", (pages.getInt("page") + 1).toString()
-                ).build().toString()
+                .setQueryParameter("page", (pages.page + 1).toString())
+                .build().toString()
 
             val nextResponse = client.newCall(GET(nextUrl, picaHeaders(nextUrl))).execute()
-            ret.addAll(pageListParse(nextResponse))
+            ret += pageListParse(nextResponse)
         }
         return ret
     }
@@ -362,26 +304,25 @@ class Picacomic : HttpSource(), ConfigurableSource {
     private class SortFilter : UriPartFilter(
         "排序",
         arrayOf(
-            Pair("新到旧", "dd"),
-            Pair("旧到新", "da"),
-            Pair("最多爱心", "ld"),
-            Pair("最多绅士指名", "vd"),
+            "新到旧" to "dd",
+            "旧到新" to "da",
+            "最多爱心" to "ld",
+            "最多绅士指名" to "vd",
         )
     )
 
     private class CategoryFilter : UriPartFilter(
         "类型",
-        arrayOf(Pair("全部", "")) +
-            arrayOf(
-                "大家都在看", "牛牛不哭", "那年今天", "官方都在看",
-                "嗶咔漢化", "全彩", "長篇", "同人", "短篇", "圓神領域",
-                "碧藍幻想", "CG雜圖", "純愛", "百合花園", "後宮閃光", "單行本", "姐姐系",
-                "妹妹系", "SM", "人妻", "NTR", "強暴",
-                "艦隊收藏", "Love Live", "SAO 刀劍神域", "Fate",
-                "東方", "禁書目錄", "Cosplay",
-                "英語 ENG", "生肉", "性轉換", "足の恋", "非人類",
-                "耽美花園", "偽娘哲學", "扶他樂園", "重口地帶", "歐美", "WEBTOON",
-            ).map { Pair(it, it) }.toTypedArray()
+        arrayOf("全部" to "") + arrayOf(
+            "大家都在看", "牛牛不哭", "那年今天", "官方都在看",
+            "嗶咔漢化", "全彩", "長篇", "同人", "短篇", "圓神領域",
+            "碧藍幻想", "CG雜圖", "純愛", "百合花園", "後宮閃光", "單行本", "姐姐系",
+            "妹妹系", "SM", "人妻", "NTR", "強暴",
+            "艦隊收藏", "Love Live", "SAO 刀劍神域", "Fate",
+            "東方", "禁書目錄", "Cosplay",
+            "英語 ENG", "生肉", "性轉換", "足の恋", "非人類",
+            "耽美花園", "偽娘哲學", "扶他樂園", "重口地帶", "歐美", "WEBTOON",
+        ).map { it to it }.toTypedArray()
     )
 
     private open class UriPartFilter(
@@ -428,7 +369,7 @@ class Picacomic : HttpSource(), ConfigurableSource {
             title = "图片质量"
             entries = arrayOf("原图", "低", "中", "高")
             entryValues = arrayOf("original", "low", "medium", "high")
-            setDefaultValue("高")
+            setDefaultValue("original")
 
             setOnPreferenceChangeListener { _, newValue ->
                 preferences.edit().putString(key, newValue as String).commit()
@@ -447,14 +388,4 @@ class Picacomic : HttpSource(), ConfigurableSource {
             }
         }.let(screen::addPreference)
     }
-}
-
-private fun JSONArray.filterJSONObject(predict: (JSONObject) -> Boolean): JSONArray {
-    val ret = JSONArray()
-    for (i in 0 until this.length()) {
-        if (predict(this.optJSONObject(i))) {
-            ret.put(this.optJSONObject(i))
-        }
-    }
-    return ret
 }
