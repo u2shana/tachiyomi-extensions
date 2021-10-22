@@ -6,7 +6,6 @@ import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
 import com.auth0.android.jwt.JWT
-import eu.kanade.tachiyomi.annotations.Nsfw
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.source.ConfigurableSource
@@ -31,11 +30,9 @@ import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
-import java.time.Instant
 import java.util.Locale
 import kotlin.collections.ArrayList
 
-@Nsfw
 class Picacomic : HttpSource(), ConfigurableSource {
     override val lang = "zh"
     override val supportsLatest = true
@@ -85,7 +82,7 @@ class Picacomic : HttpSource(), ConfigurableSource {
     }
 
     private fun picaHeaders(url: String, method: String = "GET"): Headers {
-        val time = Instant.now().epochSecond
+        val time = System.currentTimeMillis() / 1000
         val allowedChars = ('A'..'Z') + ('a'..'z') + ('0'..'9')
         val nonce = (1..32).map { allowedChars.random() }
             .joinToString("")
