@@ -4,6 +4,9 @@ apply plugin: 'kotlinx-serialization'
 
 ext {
     extName = 'Picacomic'
+    pkgNameSuffix = 'zh.picacomic'
+    extClass = '.Picacomic'
+    extVersionCode = 1
     isNsfw = true
 }
 
