@@ -31,7 +31,6 @@ import uy.kohesive.injekt.api.get
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Locale
-import kotlin.collections.ArrayList
 
 class Picacomic : HttpSource(), ConfigurableSource {
     override val lang = "zh"
@@ -152,14 +151,21 @@ class Picacomic : HttpSource(), ConfigurableSource {
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
         var sort: String? = null
         var category: String? = null
+        var rankPath: String? = null
 
         // parse filters
         for (filter in filters) {
             when (filter) {
                 is SortFilter -> sort = filter.toUriPart()
                 is CategoryFilter -> category = filter.toUriPart()
+                is RankFilter -> rankPath = filter.toUriPart()
+                else -> throw Exception("unknown filter found")
             }
         }
+
+        // return comics from leaderboard
+        if (!rankPath.isNullOrEmpty())
+            return GET("$baseUrl$rankPath", picaHeaders("$baseUrl$rankPath"))
 
         // return comics from some category or just sort
         if (query.isEmpty()) {
@@ -182,12 +188,16 @@ class Picacomic : HttpSource(), ConfigurableSource {
     }
 
     private fun hitBlocklist(comic: PicaSearchComic): Boolean {
-        return (comic.tags ?: ArrayList<String>() + comic.categories)
+        return (comic.tags ?: emptyList<String>() + comic.categories)
             .map(String::trim)
             .any { it in blocklist }
     }
 
     override fun searchMangaParse(response: Response): MangasPage {
+        if (response.request.url.toString().contains("/comics/leaderboard".toRegex())) {
+            return singlePageParse(response)
+        }
+
         val comics = json.decodeFromString<PicaResponse>(
             response.body!!.string()
         ).data.comics!!.let { json.decodeFromJsonElement<PicaSearchComics>(it) }
@@ -220,7 +230,7 @@ class Picacomic : HttpSource(), ConfigurableSource {
             author = comic.author
             description = comic.description
             artist = comic.artist
-            genre = (comic.tags ?: ArrayList<String>() + comic.categories)
+            genre = (comic.tags ?: emptyList<String>() + comic.categories)
                 .map(String::trim)
                 .distinct()
                 .joinToString(", ")
@@ -296,6 +306,7 @@ class Picacomic : HttpSource(), ConfigurableSource {
     override fun getFilterList() = FilterList(
         SortFilter(),
         CategoryFilter(),
+        RankFilter(),
     )
 
     private class SortFilter : UriPartFilter(
@@ -320,6 +331,16 @@ class Picacomic : HttpSource(), ConfigurableSource {
             "英語 ENG", "生肉", "性轉換", "足の恋", "非人類",
             "耽美花園", "偽娘哲學", "扶他樂園", "重口地帶", "歐美", "WEBTOON",
         ).map { it to it }.toTypedArray()
+    )
+
+    private class RankFilter : UriPartFilter(
+        "榜单",
+        arrayOf(
+            Pair("无", ""),
+            Pair("过去24小时最热门", "/comics/leaderboard?tt=H24&ct=VC"),
+            Pair("过去7天最热门", "/comics/leaderboard?tt=D7&ct=VC"),
+            Pair("过去30天最热门", "/comics/leaderboard?tt=D30&ct=VC"),
+        )
     )
 
     private open class UriPartFilter(
