@@ -22,62 +22,14 @@ jobs:
       - name: Validate Gradle Wrapper
         uses: gradle/wrapper-validation-action@v1
 
-  build_multisrc:
-    name: Build multisrc modules
-    needs: check_wrapper
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        lang: [all, en, ar, ca, de, es, fr, id, it, ja, ko, pt, ru, th, tr, vi, zh, bg, hi, pl]
-    steps:
-      - name: Checkout master branch
-        uses: actions/checkout@v2
-
-      - name: Set up JDK
-        uses: actions/setup-java@v1
-        with:
-          java-version: 1.8
-
-      - name: Copy CI gradle.properties
-        run: |
-          mkdir -p ~/.gradle
-          cp .github/runner-files/ci-gradle.properties ~/.gradle/gradle.properties
-
-      - name: Generate sources from the multi-source library
-        uses: gradle/gradle-command-action@v1
-        env:
-          CI_MULTISRC: "true"
-        with:
-          arguments: :multisrc:generateExtensions
-          distributions-cache-enabled: true
-          dependencies-cache-enabled: true
-          configuration-cache-enabled: true
-
-      - name: Build "${{ matrix.lang }}" extensions
-        uses: gradle/gradle-command-action@v1
-        env:
-          CI_MULTISRC: "true"
-          CI_MATRIX_LANG: ${{ matrix.lang }}
-        with:
-          arguments: assembleRelease
-          distributions-cache-enabled: true
-          dependencies-cache-enabled: true
-          configuration-cache-enabled: true
-
-      - name: Upload "${{ matrix.lang }}" APKs
-        uses: actions/upload-artifact@v2
-        with:
-          name: "multisrc-${{ matrix.lang }}-apks"
-          path: "**/*.apk"
-          retention-days: 1
-
+ 
   build_individual:
     name: Build individual modules
     needs: check_wrapper
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        lang: [all, en, ar, ca, de, es, fr, id, it, ja, ko, pt, ru, th, tr, vi, zh, bg, hi, pl]
+        lang: [zh]
     steps:
       - name: Checkout master branch
         uses: actions/checkout@v2
@@ -113,7 +65,6 @@ jobs:
   publish_repo:
     name: Publish repo
     needs:
-      - build_multisrc
       - build_individual
     if: "github.repository == 'tachiyomiorg/tachiyomi-extensions'"
     runs-on: ubuntu-latest
