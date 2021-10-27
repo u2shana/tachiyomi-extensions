@@ -142,7 +142,7 @@ class Picacomic : HttpSource(), ConfigurableSource {
     // for /comics/random, /collections
     private fun singlePageParse2(response: Response): MangasPage {
         val comics = json.decodeFromString<PicaResponse>(response.body!!.string())
-            .data.collections.comics!!.let { json.decodeFromJsonElement<List<PicaSearchComic>>(it) }
+            .data.comics!!.let { json.decodeFromJsonElement<List<PicaSearchComic>>(it) }
 
         val mangas = comics
             .filter { !hitBlocklist(it) }
