@@ -139,6 +139,28 @@ class Picacomic : HttpSource(), ConfigurableSource {
         return MangasPage(mangas, response.request.url.toString().contains("/comics/random"))
     }
 
+    // for /comics/random, /collections
+    private fun singlePageParse2(response: Response): MangasPage {
+        val comics = json.decodeFromString<PicaResponse>(response.body!!.string())
+            .data.collections.comics!!.let { json.decodeFromJsonElement<List<PicaSearchComic>>(it) }
+
+        val mangas = comics
+            .filter { !hitBlocklist(it) }
+            .map { comic ->
+                SManga.create().apply {
+                    title = comic.title
+                    author = comic.author
+                    thumbnail_url = comic.thumb.let {
+                        it.fileServer + "/static/" + it.path
+                    }
+                    url = "$baseUrl/comics/${comic._id}"
+                    status = if (comic.finished) SManga.COMPLETED else SManga.ONGOING
+                }
+            }
+
+        return MangasPage(mangas, response.request.url.toString().contains("/comics/random"))
+    }
+    
     override fun popularMangaParse(response: Response) = searchMangaParse(response)
 
     override fun latestUpdatesRequest(page: Int): Request {
@@ -152,6 +174,7 @@ class Picacomic : HttpSource(), ConfigurableSource {
         var sort: String? = null
         var category: String? = null
         var rankPath: String? = null
+        var collectionsPath: String? = null
 
         // parse filters
         for (filter in filters) {
@@ -159,9 +182,15 @@ class Picacomic : HttpSource(), ConfigurableSource {
                 is SortFilter -> sort = filter.toUriPart()
                 is CategoryFilter -> category = filter.toUriPart()
                 is RankFilter -> rankPath = filter.toUriPart()
+                is CollectionsFilter -> collectionsPath = filter.toUriPart()
                 else -> throw Exception("unknown filter found")
             }
         }
+        
+        // return comics from collections
+        if (!collectionsPath.isNullOrEmpty())
+            return GET("$baseUrl$collectionsPath", picaHeaders("$baseUrl$collectionsPath"))
+
 
         // return comics from leaderboard
         if (!rankPath.isNullOrEmpty())
@@ -197,7 +226,9 @@ class Picacomic : HttpSource(), ConfigurableSource {
         if (response.request.url.toString().contains("/comics/leaderboard".toRegex())) {
             return singlePageParse(response)
         }
-
+        if (response.request.url.toString().contains("/collections".toRegex())) {
+            return singlePageParse2(response)
+        }
         val comics = json.decodeFromString<PicaResponse>(
             response.body!!.string()
         ).data.comics!!.let { json.decodeFromJsonElement<PicaSearchComics>(it) }
@@ -307,6 +338,7 @@ class Picacomic : HttpSource(), ConfigurableSource {
         SortFilter(),
         CategoryFilter(),
         RankFilter(),
+        Collections(),
     )
 
     private class SortFilter : UriPartFilter(
