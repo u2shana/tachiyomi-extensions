@@ -341,6 +341,12 @@ class Picacomic : HttpSource(), ConfigurableSource {
         Collections(),
     )
 
+    private class CollectionsFilter : UriPartFilter(
+        "每日推荐",
+        arrayOf(
+            Pair("默认", "/collections"),
+        )
+    )
     private class SortFilter : UriPartFilter(
         "排序",
         arrayOf(
@@ -350,7 +356,6 @@ class Picacomic : HttpSource(), ConfigurableSource {
             "最多绅士指名" to "vd",
         )
     )
-
     private class CategoryFilter : UriPartFilter(
         "类型",
         arrayOf("全部" to "") + arrayOf(
